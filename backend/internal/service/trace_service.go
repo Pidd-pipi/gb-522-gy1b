@@ -7,6 +7,7 @@ import (
 	"math"
 
 	"fiber-otdr-fault-localization/backend/internal/algorithm"
+	"fiber-otdr-fault-localization/backend/internal/constants"
 	"fiber-otdr-fault-localization/backend/internal/dto"
 	"fiber-otdr-fault-localization/backend/internal/model"
 	"fiber-otdr-fault-localization/backend/internal/repository"
@@ -37,6 +38,9 @@ func (s *TraceService) Import(request dto.ImportTraceRequest, actor Actor) (mode
 	}
 	if err != nil {
 		return model.TraceCapture{}, internal("load route failed", err)
+	}
+	if route.RouteStatus == constants.RouteRetired {
+		return model.TraceCapture{}, conflict("route is retired and sealed against new trace imports", nil)
 	}
 	window := request.DenoiseWindow
 	if window == 0 {
@@ -69,6 +73,16 @@ func (s *TraceService) Import(request dto.ImportTraceRequest, actor Actor) (mode
 	processed, _ := json.Marshal(filtered)
 	trace := model.TraceCapture{RouteID: request.RouteID, WavelengthNM: request.WavelengthNM, PulseWidthNS: request.PulseWidthNS, SampleIntervalNS: request.SampleIntervalNS, RawPointsJSON: datatypes.JSON(raw), ProcessedJSON: datatypes.JSON(processed), NoiseFloorDB: noise, CapturedAt: request.CapturedAt, UploadedBy: actor.ID, DenoiseWindow: window, PeakThresholdDB: threshold, MergeWindow: merge}
 	err = s.store.Transaction(func(tx *repository.Store) error {
+		if err := tx.Routes.LockForUpdate(route.ID); err != nil {
+			return err
+		}
+		current, err := tx.Routes.Get(route.ID)
+		if err != nil {
+			return err
+		}
+		if current.RouteStatus == constants.RouteRetired {
+			return conflict("route is retired and sealed against new trace imports", nil)
+		}
 		if err := tx.Traces.Create(&trace); err != nil {
 			return err
 		}
@@ -76,6 +90,10 @@ func (s *TraceService) Import(request dto.ImportTraceRequest, actor Actor) (mode
 		return tx.Audits.Create(audit(actor, "trace.imported", "TraceCapture", trace.ID, &route.ID, "{}", snapshot(params)))
 	})
 	if err != nil {
+		var appErr *AppError
+		if errors.As(err, &appErr) {
+			return trace, err
+		}
 		return trace, internal("import trace failed", err)
 	}
 	return trace, nil

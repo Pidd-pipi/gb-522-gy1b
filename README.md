@@ -32,7 +32,7 @@ docker compose down -v --remove-orphans
 - 轨迹分析：导入离线采样，记录去噪窗口、检测阈值和合并窗口，缩放真实 API 曲线。
 - 事件复核：按线路、类型和复核状态筛选，保留算法原值并单独保存人工修订。
 - 定位案例：执行基线差异比较，按 `draft -> analyzing -> pending_review -> confirmed -> closed` 流转。
-- 不可变审计：记录轨迹导入、基线变更、算法参数、事件修订、案例确认和关闭，携带 request ID 与前后值摘要。
+- 不可变审计：记录轨迹导入、基线变更、线路退役、算法参数、事件修订、案例确认和关闭，携带 request ID 与前后值摘要。
 
 ## 技术栈与目录
 
@@ -77,6 +77,7 @@ frontend/src/pages                 五个业务页与登录页
 | `POST` | `/api/v1/auth/login` | 登录 |
 | `GET/POST` | `/api/v1/routes` | 线路列表/新建 |
 | `GET/PATCH` | `/api/v1/routes/:id` | 线路详情/编辑 |
+| `POST` | `/api/v1/routes/:id/retire` | 复核员退役封存（有分析中案例时整次拒绝） |
 | `POST` | `/api/v1/routes/:id/baseline` | 设置基线 |
 | `GET` | `/api/v1/traces` | 轨迹列表 |
 | `POST` | `/api/v1/traces/import` | 导入采样点 |
@@ -115,7 +116,7 @@ frontend/src/pages                 五个业务页与登录页
 4. 距离公式：`distance = c * sample_index * sample_interval_ns * 1e-9 / (2 * refractive_index)`，其中 `c = 299792458 m/s`。超过线路长度的候选事件被拒绝。
 5. 基线比对：在距离容差内一对一最近匹配，输出新增、消失和损耗增大三类差异与置信度。
 
-状态迁移使用条件更新和 `version` 乐观锁。分析失败回到 `draft` 并保存错误；只有 reviewer/admin 能确认；关闭后不可修改。登录、轨迹导入和分析使用本地内存限流。访问日志不记录 JWT、密码、请求体或完整采样数组。
+状态迁移使用条件更新和 `version` 乐观锁。分析失败回到 `draft` 并保存错误；只有 reviewer/admin 能确认；关闭后不可修改。退役只能通过 reviewer/admin 的专用 `POST /routes/:id/retire` 接口执行：线路仍有 `analyzing` 案例时整次拒绝且状态不变；退役成功时状态变更与 `route.retired` 审计在同一事务内提交。退役线路统一封存，禁止导入轨迹、设置基线、新建案例和重新分析（既有 `pending_review` 案例仍可确认、`confirmed` 案例仍可关闭），通用 PATCH 不得把退役线路改回在线/维护；`active` 与 `maintenance` 的既有维护状态流程保持不变。登录、轨迹导入和分析使用本地内存限流。访问日志不记录 JWT、密码、请求体或完整采样数组。
 
 ## 本地开发与验证
 

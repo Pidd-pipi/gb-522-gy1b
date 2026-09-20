@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"strings"
 
+	"fiber-otdr-fault-localization/backend/internal/constants"
 	"fiber-otdr-fault-localization/backend/internal/dto"
 	"fiber-otdr-fault-localization/backend/internal/model"
 	"fiber-otdr-fault-localization/backend/internal/repository"
@@ -20,7 +21,7 @@ func (s *RouteService) Create(request dto.CreateRouteRequest, actor Actor) (mode
 	if status == "" {
 		status = "active"
 	}
-	route := model.FiberRoute{RouteCode: strings.ToUpper(strings.TrimSpace(request.RouteCode)), Name: strings.TrimSpace(request.Name), LengthM: request.LengthM, RefractiveIndex: request.RefractiveIndex, LaunchConnector: strings.TrimSpace(request.LaunchConnector), RouteStatus: status}
+	route := model.FiberRoute{RouteCode: strings.ToUpper(strings.TrimSpace(request.RouteCode)), Name: strings.TrimSpace(request.Name), LengthM: request.LengthM, RefractiveIndex: request.RefractiveIndex, LaunchConnector: strings.TrimSpace(request.LaunchConnector), RouteStatus: constants.RouteStatus(status)}
 	err := s.store.Transaction(func(tx *repository.Store) error {
 		if _, err := tx.Routes.GetByCode(route.RouteCode); err == nil {
 			return conflict("route code already exists", err)
@@ -89,16 +90,91 @@ func (s *RouteService) Update(id uint, request dto.UpdateRouteRequest, actor Act
 		after.LaunchConnector = strings.TrimSpace(*request.LaunchConnector)
 	}
 	if request.RouteStatus != nil {
-		after.RouteStatus = *request.RouteStatus
+		after.RouteStatus = constants.RouteStatus(*request.RouteStatus)
+	}
+	requestedRetire := request.RouteStatus != nil && *request.RouteStatus == string(constants.RouteRetired)
+	reopenRetired := before.RouteStatus == constants.RouteRetired && request.RouteStatus != nil && *request.RouteStatus != string(constants.RouteRetired)
+	if requestedRetire {
+		return before, conflict("retirement must use the dedicated retire endpoint", nil)
+	}
+	if reopenRetired {
+		return before, conflict("retired routes are sealed and cannot return to service", nil)
 	}
 	err = s.store.Transaction(func(tx *repository.Store) error {
+		// Re-check under the row lock so retirement racing an edit cannot be
+		// silently reverted by a stale update.
+		if err := tx.Routes.LockForUpdate(id); err != nil {
+			return err
+		}
+		current, err := tx.Routes.Get(id)
+		if err != nil {
+			return err
+		}
+		if current.RouteStatus == constants.RouteRetired && request.RouteStatus != nil && string(current.RouteStatus) != *request.RouteStatus {
+			return conflict("retired routes are sealed and cannot return to service", nil)
+		}
 		if err := tx.Routes.Update(&after); err != nil {
 			return err
 		}
 		return tx.Audits.Create(audit(actor, "route.updated", "FiberRoute", id, &id, beforeSnapshot, snapshot(after)))
 	})
 	if err != nil {
+		var appErr *AppError
+		if errors.As(err, &appErr) {
+			return after, err
+		}
 		return after, internal("update route failed", err)
+	}
+	return after, nil
+}
+
+// Retire seals a route. Analyzing cases block the whole operation: neither the
+// status nor any audit row is written. The status flip and its audit log share
+// one transaction so retirement can never be partially applied.
+func (s *RouteService) Retire(id uint, actor Actor) (model.FiberRoute, error) {
+	before, err := s.store.Routes.Get(id)
+	if errors.Is(err, repository.ErrNotFound) {
+		return before, notFound("route")
+	}
+	if err != nil {
+		return before, internal("get route failed", err)
+	}
+	if before.RouteStatus == constants.RouteRetired {
+		return before, conflict("route is already retired", nil)
+	}
+	beforeSnapshot := snapshot(before)
+	var after model.FiberRoute
+	err = s.store.Transaction(func(tx *repository.Store) error {
+		if err := tx.Routes.LockForUpdate(id); err != nil {
+			return err
+		}
+		current, err := tx.Routes.Get(id)
+		if err != nil {
+			return err
+		}
+		if current.RouteStatus == constants.RouteRetired {
+			return conflict("route is already retired", nil)
+		}
+		analyzing, err := tx.Routes.CountCasesByStatus(id, constants.CaseAnalyzing)
+		if err != nil {
+			return err
+		}
+		if analyzing > 0 {
+			return conflict("route has cases still being analyzed and cannot be retired", nil)
+		}
+		if err := tx.Routes.Retire(id); err != nil {
+			return err
+		}
+		after = current
+		after.RouteStatus = constants.RouteRetired
+		return tx.Audits.Create(audit(actor, "route.retired", "FiberRoute", id, &id, beforeSnapshot, snapshot(after)))
+	})
+	if err != nil {
+		var appErr *AppError
+		if errors.As(err, &appErr) {
+			return before, err
+		}
+		return before, internal("retire route failed", err)
 	}
 	return after, nil
 }
@@ -118,14 +194,31 @@ func (s *RouteService) SetBaseline(routeID, traceID uint, actor Actor) (model.Fi
 	if !belongs {
 		return route, invalid("baseline trace must belong to the route", nil)
 	}
+	if route.RouteStatus == constants.RouteRetired {
+		return route, conflict("retired routes are sealed and their baseline cannot change", nil)
+	}
 	before := snapshot(map[string]any{"baseline_trace_id": route.BaselineTraceID})
 	err = s.store.Transaction(func(tx *repository.Store) error {
+		if err := tx.Routes.LockForUpdate(routeID); err != nil {
+			return err
+		}
+		current, err := tx.Routes.Get(routeID)
+		if err != nil {
+			return err
+		}
+		if current.RouteStatus == constants.RouteRetired {
+			return conflict("retired routes are sealed and their baseline cannot change", nil)
+		}
 		if err := tx.Routes.SetBaseline(routeID, traceID); err != nil {
 			return err
 		}
 		return tx.Audits.Create(audit(actor, "route.baseline_changed", "FiberRoute", routeID, &routeID, before, snapshot(map[string]any{"baseline_trace_id": traceID})))
 	})
 	if err != nil {
+		var appErr *AppError
+		if errors.As(err, &appErr) {
+			return route, err
+		}
 		return route, internal("set baseline failed", err)
 	}
 	route.BaselineTraceID = &traceID

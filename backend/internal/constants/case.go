@@ -34,3 +34,24 @@ const (
 func ValidRole(role string) bool {
 	return role == RoleAnalyst || role == RoleReviewer || role == RoleAdmin
 }
+
+// RouteStatus tracks the maintenance lifecycle of a fiber route. Retired is a
+// terminal seal enforced by the service layer: it can only be reached through
+// the dedicated retire endpoint and blocks imports, baselines, new cases and
+// re-analysis.
+type RouteStatus string
+
+const (
+	RouteActive      RouteStatus = "active"
+	RouteMaintenance RouteStatus = "maintenance"
+	RouteRetired     RouteStatus = "retired"
+)
+
+func (s RouteStatus) Valid() bool {
+	switch s {
+	case RouteActive, RouteMaintenance, RouteRetired:
+		return true
+	default:
+		return false
+	}
+}

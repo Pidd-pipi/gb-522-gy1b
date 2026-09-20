@@ -5,9 +5,11 @@ import (
 	"fmt"
 	"strings"
 
+	"fiber-otdr-fault-localization/backend/internal/constants"
 	"fiber-otdr-fault-localization/backend/internal/dto"
 	"fiber-otdr-fault-localization/backend/internal/model"
 	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 )
 
 type FiberRouteRepository struct{ db *gorm.DB }
@@ -81,4 +83,52 @@ func (r *FiberRouteRepository) SetBaseline(routeID, traceID uint) error {
 		return ErrNotFound
 	}
 	return nil
+}
+
+// LockForUpdate serializes mutating actions (retirement, trace import, case
+// analysis) on one route so the retired-state seal cannot be bypassed by a
+// concurrent transaction. FOR UPDATE is unavailable on SQLite, where the
+// connection is serialized anyway.
+func (r *FiberRouteRepository) LockForUpdate(routeID uint) error {
+	query := r.db.Model(&model.FiberRoute{}).Where("id = ?", routeID)
+	if r.db.Dialector.Name() == "sqlite" {
+		query = query.Select("id")
+	} else {
+		query = query.Clauses(clause.Locking{Strength: "UPDATE"})
+	}
+	if err := query.First(&model.FiberRoute{}).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return ErrNotFound
+		}
+		return fmt.Errorf("lock fiber route: %w", err)
+	}
+	return nil
+}
+
+// Retire performs the guarded status flip. The NOT ('retired') predicate turns
+// duplicate retirement into RowsAffected == 0 instead of a second audit row.
+func (r *FiberRouteRepository) Retire(routeID uint) error {
+	result := r.db.Model(&model.FiberRoute{}).
+		Where("id = ? AND route_status <> ?", routeID, string(constants.RouteRetired)).
+		Update("route_status", string(constants.RouteRetired))
+	if result.Error != nil {
+		return fmt.Errorf("retire fiber route: %w", result.Error)
+	}
+	if result.RowsAffected == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
+func (r *FiberRouteRepository) CountCasesByStatus(routeID uint, statuses ...constants.CaseStatus) (int64, error) {
+	if len(statuses) == 0 {
+		return 0, nil
+	}
+	var count int64
+	if err := r.db.Model(&model.LocalizationCase{}).
+		Where("route_id = ? AND case_status IN ?", routeID, statuses).
+		Count(&count).Error; err != nil {
+		return 0, fmt.Errorf("count route cases by status: %w", err)
+	}
+	return count, nil
 }

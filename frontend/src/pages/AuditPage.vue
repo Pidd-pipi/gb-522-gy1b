@@ -6,7 +6,7 @@ import { useAuditStore } from '@/stores/audit'
 import { useRouteStore } from '@/stores/routes'
 
 const audit = useAuditStore(); const routes = useRouteStore(); const filters = reactive({route_id:undefined as number|undefined,actor:'',action:''})
-const actionLabels:Record<string,string>={'route.created':'新建线路','route.updated':'线路变更','route.baseline_changed':'基线变更','trace.imported':'轨迹导入','trace.events_detected':'事件检测','event.reviewed':'事件复核','case.created':'新建案例','case.analysis_started':'分析启动','case.analysis_completed':'分析完成','case.analysis_failed':'分析失败','case.confirmed':'案例确认','case.closed':'案例关闭'}
+const actionLabels:Record<string,string>={'route.created':'新建线路','route.updated':'线路变更','route.retired':'线路退役封存','route.baseline_changed':'基线变更','trace.imported':'轨迹导入','trace.events_detected':'事件检测','event.reviewed':'事件复核','case.created':'新建案例','case.analysis_started':'分析启动','case.analysis_recovered':'分析租约恢复','case.analysis_completed':'分析完成','case.analysis_failed':'分析失败','case.confirmed':'案例确认','case.closed':'案例关闭'}
 async function search(){await audit.fetch({...filters,page_size:100})}
 function summary(value:string){try{const parsed=JSON.parse(value);const text=JSON.stringify(parsed);return text.length>110?text.slice(0,110)+'…':text}catch{return value}}
 onMounted(async()=>{await Promise.all([routes.fetch({page_size:100}),search()])})

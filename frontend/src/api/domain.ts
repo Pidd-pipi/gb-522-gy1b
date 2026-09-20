@@ -10,6 +10,7 @@ export const routeApi = {
   update: (id: number, body: object) => api.patch<ApiEnvelope<FiberRoute>>(`/routes/${id}`, body),
   detail: (id: number) => api.get<ApiEnvelope<{ route: FiberRoute; traces: TraceCapture[] }>>(`/routes/${id}`),
   setBaseline: (id: number, traceId: number) => api.post<ApiEnvelope<FiberRoute>>(`/routes/${id}/baseline`, { trace_id: traceId }),
+  retire: (id: number) => api.post<ApiEnvelope<FiberRoute>>(`/routes/${id}/retire`, {}),
 }
 export const traceApi = {
   list: (params?: object) => api.get<ApiEnvelope<TraceCapture[]>>('/traces', { params }),

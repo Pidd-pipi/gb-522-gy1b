@@ -87,3 +87,16 @@ func (h *FiberRouteHandler) SetBaseline(c *gin.Context) {
 	}
 	ok(c, http.StatusOK, item, nil)
 }
+
+func (h *FiberRouteHandler) Retire(c *gin.Context) {
+	id, valid := idParam(c)
+	if !valid {
+		return
+	}
+	item, err := h.service.Retire(id, actor(c))
+	if err != nil {
+		fail(c, err)
+		return
+	}
+	ok(c, http.StatusOK, item, nil)
+}

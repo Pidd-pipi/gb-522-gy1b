@@ -25,6 +25,16 @@ func (s *CaseService) Create(request dto.CreateCaseRequest, actor Actor) (model.
 	if request.BaselineTraceID == request.CurrentTraceID {
 		return model.LocalizationCase{}, invalid("baseline and current traces must differ", nil)
 	}
+	route, err := s.store.Routes.Get(request.RouteID)
+	if errors.Is(err, repository.ErrNotFound) {
+		return model.LocalizationCase{}, notFound("route")
+	}
+	if err != nil {
+		return model.LocalizationCase{}, internal("get case route failed", err)
+	}
+	if route.RouteStatus == constants.RouteRetired {
+		return model.LocalizationCase{}, conflict("route is retired and sealed against new localization cases", nil)
+	}
 	for _, traceID := range []uint{request.BaselineTraceID, request.CurrentTraceID} {
 		belongs, err := s.store.Traces.BelongsToRoute(traceID, request.RouteID)
 		if err != nil {
@@ -44,13 +54,27 @@ func (s *CaseService) Create(request dto.CreateCaseRequest, actor Actor) (model.
 	}
 	params, _ := json.Marshal(dto.CaseParameters{DistanceToleranceM: tolerance, LossIncreaseDB: loss})
 	item := model.LocalizationCase{RouteID: request.RouteID, BaselineTraceID: request.BaselineTraceID, CurrentTraceID: request.CurrentTraceID, CaseStatus: constants.CaseDraft, ParametersJSON: datatypes.JSON(params), DifferencesJSON: datatypes.JSON([]byte("[]")), Version: 1, CreatedBy: actor.ID}
-	err := s.store.Transaction(func(tx *repository.Store) error {
+	err = s.store.Transaction(func(tx *repository.Store) error {
+		if err := tx.Routes.LockForUpdate(request.RouteID); err != nil {
+			return err
+		}
+		current, err := tx.Routes.Get(request.RouteID)
+		if err != nil {
+			return err
+		}
+		if current.RouteStatus == constants.RouteRetired {
+			return conflict("route is retired and sealed against new localization cases", nil)
+		}
 		if err := tx.Cases.Create(&item); err != nil {
 			return err
 		}
 		return tx.Audits.Create(audit(actor, "case.created", "LocalizationCase", item.ID, &item.RouteID, "{}", snapshot(item)))
 	})
 	if err != nil {
+		var appErr *AppError
+		if errors.As(err, &appErr) {
+			return item, err
+		}
 		return item, internal("create case failed", err)
 	}
 	return item, nil
@@ -116,12 +140,36 @@ func (s *CaseService) Analyze(id uint, request dto.AnalyzeCaseRequest, actor Act
 	if !constants.CanTransition(item.CaseStatus, constants.CaseAnalyzing) {
 		return item, conflict("case must be in draft before analysis", nil)
 	}
+	route, err := s.store.Routes.Get(item.RouteID)
+	if errors.Is(err, repository.ErrNotFound) {
+		return item, notFound("route")
+	}
+	if err != nil {
+		return item, internal("get case route failed", err)
+	}
+	if route.RouteStatus == constants.RouteRetired {
+		return item, conflict("route is retired and sealed; pending cases can still be confirmed or closed but not analyzed", nil)
+	}
 	if err := s.store.Transaction(func(tx *repository.Store) error {
+		if err := tx.Routes.LockForUpdate(item.RouteID); err != nil {
+			return err
+		}
+		currentRoute, err := tx.Routes.Get(item.RouteID)
+		if err != nil {
+			return err
+		}
+		if currentRoute.RouteStatus == constants.RouteRetired {
+			return conflict("route is retired and sealed; pending cases can still be confirmed or closed but not analyzed", nil)
+		}
 		if err := tx.Cases.Transition(item.ID, item.Version, constants.CaseDraft, constants.CaseAnalyzing, map[string]any{"analysis_error": ""}); err != nil {
 			return err
 		}
 		return tx.Audits.Create(audit(actor, "case.analysis_started", "LocalizationCase", item.ID, &item.RouteID, snapshot(map[string]any{"status": item.CaseStatus}), snapshot(map[string]any{"status": constants.CaseAnalyzing})))
 	}); err != nil {
+		var appErr *AppError
+		if errors.As(err, &appErr) {
+			return item, err
+		}
 		return item, conflict("case changed while analysis was starting", err)
 	}
 	item.CaseStatus = constants.CaseAnalyzing
