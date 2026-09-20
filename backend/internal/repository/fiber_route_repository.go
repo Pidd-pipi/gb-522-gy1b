@@ -82,3 +82,13 @@ func (r *FiberRouteRepository) SetBaseline(routeID, traceID uint) error {
 	}
 	return nil
 }
+
+// Retire flips a non-retired route to retired. The predicate keeps concurrent
+// retirements from overwriting each other; the boolean reports the transition.
+func (r *FiberRouteRepository) Retire(id uint) (bool, error) {
+	result := r.db.Model(&model.FiberRoute{}).Where("id = ? AND route_status <> ?", id, model.RouteRetired).Update("route_status", model.RouteRetired)
+	if result.Error != nil {
+		return false, fmt.Errorf("retire fiber route: %w", result.Error)
+	}
+	return result.RowsAffected > 0, nil
+}

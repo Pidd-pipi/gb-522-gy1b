@@ -38,6 +38,9 @@ func (s *TraceService) Import(request dto.ImportTraceRequest, actor Actor) (mode
 	if err != nil {
 		return model.TraceCapture{}, internal("load route failed", err)
 	}
+	if route.RouteStatus == model.RouteRetired {
+		return model.TraceCapture{}, conflict("retired routes cannot import traces", nil)
+	}
 	window := request.DenoiseWindow
 	if window == 0 {
 		window = 5

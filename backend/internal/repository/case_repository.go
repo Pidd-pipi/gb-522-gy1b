@@ -50,6 +50,14 @@ func (r *CaseRepository) List(query dto.CaseQuery) ([]model.LocalizationCase, in
 	return items, total, nil
 }
 
+func (r *CaseRepository) CountByRouteAndStatus(routeID uint, status constants.CaseStatus) (int64, error) {
+	var count int64
+	if err := r.db.Model(&model.LocalizationCase{}).Where("route_id = ? AND case_status = ?", routeID, status).Count(&count).Error; err != nil {
+		return 0, fmt.Errorf("count localization cases by route and status: %w", err)
+	}
+	return count, nil
+}
+
 func (r *CaseRepository) Transition(id, version uint, from, to constants.CaseStatus, updates map[string]any) error {
 	updates["case_status"] = to
 	updates["version"] = gorm.Expr("version + 1")

@@ -2,6 +2,12 @@ package model
 
 import "time"
 
+const (
+	RouteActive      = "active"
+	RouteMaintenance = "maintenance"
+	RouteRetired     = "retired"
+)
+
 type FiberRoute struct {
 	ID              uint      `gorm:"primaryKey" json:"id"`
 	RouteCode       string    `gorm:"size:40;not null;uniqueIndex" json:"route_code"`

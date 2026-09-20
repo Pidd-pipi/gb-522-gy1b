@@ -29,6 +29,7 @@ docker compose down -v --remove-orphans
 ## 功能
 
 - 线路档案：校验线路长度和折射率，查看历史轨迹，由 reviewer/admin 设置基线。
+- 线路退役：reviewer/admin 通过专用入口将线路置为退役；存在分析中案例时整次拒绝且状态不变，退役审计与状态同事务提交。退役后禁止导入轨迹、设置基线、新建案例和重新分析，待复核案例仍可确认或关闭，维护状态流程不受影响。
 - 轨迹分析：导入离线采样，记录去噪窗口、检测阈值和合并窗口，缩放真实 API 曲线。
 - 事件复核：按线路、类型和复核状态筛选，保留算法原值并单独保存人工修订。
 - 定位案例：执行基线差异比较，按 `draft -> analyzing -> pending_review -> confirmed -> closed` 流转。
@@ -78,6 +79,7 @@ frontend/src/pages                 五个业务页与登录页
 | `GET/POST` | `/api/v1/routes` | 线路列表/新建 |
 | `GET/PATCH` | `/api/v1/routes/:id` | 线路详情/编辑 |
 | `POST` | `/api/v1/routes/:id/baseline` | 设置基线 |
+| `POST` | `/api/v1/routes/:id/retire` | 退役线路（reviewer/admin） |
 | `GET` | `/api/v1/traces` | 轨迹列表 |
 | `POST` | `/api/v1/traces/import` | 导入采样点 |
 | `GET` | `/api/v1/traces/:id` | 轨迹、处理点和事件 |
@@ -116,6 +118,8 @@ frontend/src/pages                 五个业务页与登录页
 5. 基线比对：在距离容差内一对一最近匹配，输出新增、消失和损耗增大三类差异与置信度。
 
 状态迁移使用条件更新和 `version` 乐观锁。分析失败回到 `draft` 并保存错误；只有 reviewer/admin 能确认；关闭后不可修改。登录、轨迹导入和分析使用本地内存限流。访问日志不记录 JWT、密码、请求体或完整采样数组。
+
+线路退役为终态：仅 `POST /routes/:id/retire` 可写入 `retired`，通用编辑接口的 `route_status` 只接受 `active`/`maintenance` 流转。退役在单事务内校验无 `analyzing` 案例、条件更新状态并写入 `route.retired` 审计，任一步失败整体回滚；已退役线路的轨迹导入、基线变更、案例新建与重新分析均返回 `STATE_CONFLICT`。
 
 ## 本地开发与验证
 

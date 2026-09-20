@@ -25,6 +25,16 @@ func (s *CaseService) Create(request dto.CreateCaseRequest, actor Actor) (model.
 	if request.BaselineTraceID == request.CurrentTraceID {
 		return model.LocalizationCase{}, invalid("baseline and current traces must differ", nil)
 	}
+	route, err := s.store.Routes.Get(request.RouteID)
+	if errors.Is(err, repository.ErrNotFound) {
+		return model.LocalizationCase{}, notFound("route")
+	}
+	if err != nil {
+		return model.LocalizationCase{}, internal("load route failed", err)
+	}
+	if route.RouteStatus == model.RouteRetired {
+		return model.LocalizationCase{}, conflict("retired routes cannot create localization cases", nil)
+	}
 	for _, traceID := range []uint{request.BaselineTraceID, request.CurrentTraceID} {
 		belongs, err := s.store.Traces.BelongsToRoute(traceID, request.RouteID)
 		if err != nil {
@@ -44,7 +54,7 @@ func (s *CaseService) Create(request dto.CreateCaseRequest, actor Actor) (model.
 	}
 	params, _ := json.Marshal(dto.CaseParameters{DistanceToleranceM: tolerance, LossIncreaseDB: loss})
 	item := model.LocalizationCase{RouteID: request.RouteID, BaselineTraceID: request.BaselineTraceID, CurrentTraceID: request.CurrentTraceID, CaseStatus: constants.CaseDraft, ParametersJSON: datatypes.JSON(params), DifferencesJSON: datatypes.JSON([]byte("[]")), Version: 1, CreatedBy: actor.ID}
-	err := s.store.Transaction(func(tx *repository.Store) error {
+	err = s.store.Transaction(func(tx *repository.Store) error {
 		if err := tx.Cases.Create(&item); err != nil {
 			return err
 		}
@@ -112,6 +122,13 @@ func (s *CaseService) Analyze(id uint, request dto.AnalyzeCaseRequest, actor Act
 	}
 	if item.CaseStatus == constants.CaseClosed {
 		return item, conflict("closed cases cannot be analyzed", nil)
+	}
+	route, err := s.store.Routes.Get(item.RouteID)
+	if err != nil {
+		return item, internal("load case route failed", err)
+	}
+	if route.RouteStatus == model.RouteRetired {
+		return item, conflict("retired routes cannot be re-analyzed", nil)
 	}
 	if !constants.CanTransition(item.CaseStatus, constants.CaseAnalyzing) {
 		return item, conflict("case must be in draft before analysis", nil)
